@@ -3,6 +3,30 @@ import { PrismaService } from '../prisma/prisma.service';
 import { parseJson, toJson } from '../common/utils/json.util';
 import { UpdateUserDto } from './dto/update-user.dto';
 
+/**
+ * Décode le `rank_level` MLBB (1..9999) en palier lisible, d'après les plages
+ * officielles Moonton (/api/academy/ranks). Au-delà de 135 → paliers Mythic.
+ */
+export function decodeRank(level?: number | null): string | null {
+  if (level == null) return null;
+  const tiers: Array<[number, string]> = [
+    [10, 'Warrior'],
+    [25, 'Elite'],
+    [45, 'Master'],
+    [75, 'Grandmaster'],
+    [105, 'Epic'],
+    [135, 'Legend'],
+    [160, 'Mythic'],
+    [185, 'Mythic Honor'],
+    [235, 'Mythic Glory'],
+    [Number.POSITIVE_INFINITY, 'Mythic Immortal'],
+  ];
+  for (const [max, name] of tiers) {
+    if (level <= max) return name;
+  }
+  return null;
+}
+
 /** Calcule le pourcentage de victoires, arrondi à 1 décimale (0 si aucun match). */
 export function computeWinRate(wins: number, losses: number): number {
   const total = (wins || 0) + (losses || 0);
@@ -51,7 +75,10 @@ export function serializeUser(user: any) {
     // Données de jeu prêtes à l'emploi
     gameStats: parseJson<any>(user.gameStats, {}),
     gameFrequentHeroes: parseJson<any[]>(user.gameFrequentHeroes, []),
+    gameRoles: parseJson<any[]>(user.gameRoles, []),
     gameSeasons: parseJson<number[]>(user.gameSeasons, []),
+    // Rang lisible décodé depuis rank_level (ex. « Mythic Glory »).
+    gameRank: decodeRank(user.gameRankLevel),
   };
 }
 

@@ -55,6 +55,7 @@ model User {
   gameCountry    String? // pays enregistré en jeu
   gameStats      String    @default("{}") // JSON: stats cumulées « tous modes » (victoires, parties, MVP...)
   gameFrequentHeroes String @default("[]") // JSON: héros favoris de la saison courante
+  gameRoles      String    @default("[]") // JSON: rôles principaux [{role, matches}] (top 3)
   gameSeasons    String    @default("[]") // JSON: number[] — saisons disponibles (sids, plus récente en tête)
   gameSyncedAt   DateTime? // dernière synchronisation des données de jeu
   // Préférence d'affichage du profil

@@ -28,6 +28,7 @@ const EMPTY_GAME_PROFILE = {
   country: null,
   stats: {},
   frequentHeroes: [],
+  roles: [],
   seasons: [],
   currentSeason: null,
 };
@@ -166,6 +167,10 @@ export class AuthService {
     const frequentHeroes =
       currentSeason != null ? await this.fetchFrequentHeroes(token, currentSeason) : [];
 
+    // Rôles principaux (top 3) : on mappe les héros favoris vers leur rôle via
+    // notre base héros, pondéré par le nombre de parties.
+    const roles = await this.computeMainRoles(frequentHeroes);
+
     const wins = st.wc ?? 0;
     const total = st.tc ?? 0;
     const stats = {
@@ -187,9 +192,33 @@ export class AuthService {
       country: info.reg_country || null,
       stats,
       frequentHeroes,
+      roles,
       seasons,
       currentSeason,
     };
+  }
+
+  /** Déduit les 3 rôles principaux à partir des héros favoris (via la base héros). */
+  private async computeMainRoles(
+    frequentHeroes: any[],
+  ): Promise<Array<{ role: string; matches: number }>> {
+    if (!frequentHeroes.length) return [];
+    const names = frequentHeroes.map((h) => h.name).filter(Boolean);
+    const heroes = await this.prisma.hero.findMany({
+      where: { name: { in: names } },
+      select: { name: true, role: true },
+    });
+    const roleByName = new Map(heroes.map((h) => [h.name, h.role]));
+    const tally = new Map<string, number>();
+    for (const h of frequentHeroes) {
+      const role = roleByName.get(h.name);
+      if (!role) continue;
+      tally.set(role, (tally.get(role) ?? 0) + (h.matches ?? 0));
+    }
+    return [...tally.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([role, matches]) => ({ role, matches }));
   }
 
   /** Héros favoris du compte connecté pour une saison donnée (sélecteur de saison). */
@@ -234,6 +263,7 @@ export class AuthService {
       gameCountry: profile.country,
       gameStats: toJson(profile.stats),
       gameFrequentHeroes: toJson(profile.frequentHeroes),
+      gameRoles: toJson(profile.roles),
       gameSeasons: toJson(profile.seasons),
       gameSyncedAt: new Date(),
     };
