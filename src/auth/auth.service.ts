@@ -19,6 +19,17 @@ import { ChangePasswordDto } from './dto/change-password.dto';
 // API publique MLBB (rone.dev) pour la connexion par code de vérification.
 const MLBB_API = 'https://mlbb.rone.dev/api';
 
+// Profil de jeu « vide » (quand l'API n'a pas renvoyé de jeton exploitable).
+const EMPTY_GAME_PROFILE = {
+  nickname: null,
+  avatar: null,
+  level: null,
+  rankLevel: null,
+  country: null,
+  stats: {},
+  frequentHeroes: [],
+};
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger('AuthService');
@@ -89,7 +100,96 @@ export class AuthService {
     return serializeUser(user);
   }
 
-  // ============ Connexion MLBB (code de vérification) ============
+  // ============ Connexion / liaison MLBB (code de vérification) ============
+
+  /**
+   * Récupère le profil de jeu complet (identité + statistiques + héros favoris)
+   * via l'API MLBB. Tolérant aux pannes : renvoie ce qui a pu être obtenu.
+   */
+  private async fetchGameProfile(token: string) {
+    const headers = { Authorization: `Bearer ${token}` };
+    const [infoR, statsR, freqR] = await Promise.allSettled([
+      fetch(`${MLBB_API}/user/info`, { headers }).then((r) => r.json()),
+      fetch(`${MLBB_API}/user/stats`, { headers }).then((r) => r.json()),
+      fetch(`${MLBB_API}/user/heroes/frequent?limit=8`, { headers }).then((r) => r.json()),
+    ]);
+
+    const info = infoR.status === 'fulfilled' ? infoR.value?.data ?? {} : {};
+    const st = statsR.status === 'fulfilled' ? statsR.value?.data ?? {} : {};
+    const freq =
+      freqR.status === 'fulfilled' ? freqR.value?.data?.result ?? [] : [];
+
+    const wins = st.wc ?? 0;
+    const total = st.tc ?? 0;
+    const stats = {
+      wins,
+      total,
+      losses: Math.max(0, total - wins),
+      winRate: total ? Math.round((wins / total) * 1000) / 10 : 0,
+      avgScore: st.as ? Math.round((st.as / 100) * 100) / 100 : 0,
+      gameTime: st.gt ?? 0,
+      mvpCount: st.mvpc ?? 0,
+      winStreak: st.wsc ?? 0,
+    };
+
+    const frequentHeroes = (Array.isArray(freq) ? freq : []).map((h: any) => ({
+      heroId: h.hid,
+      name: h.hid_e?.n ?? `#${h.hid}`,
+      image: h.hid_e?.ix ?? null,
+      image2x: h.hid_e?.i2x ?? null,
+      matches: h.tc ?? 0,
+      wins: h.wc ?? 0,
+      winRate: h.tc ? Math.round(((h.wc ?? 0) / h.tc) * 1000) / 10 : 0,
+      power: h.p ?? 0,
+    }));
+
+    return {
+      nickname: info.name || null,
+      avatar: info.avatar || null,
+      level: info.level ?? null,
+      rankLevel: info.rank_level ?? null,
+      country: info.reg_country || null,
+      stats,
+      frequentHeroes,
+    };
+  }
+
+  /** Valide un code de vérification et renvoie le jeton de l'API MLBB. */
+  private async validateMlbbCode(roleId: number, zoneId: number, vc: number) {
+    let json: any;
+    try {
+      const res = await fetch(`${MLBB_API}/user/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role_id: roleId, zone_id: zoneId, vc }),
+      });
+      json = await res.json();
+    } catch (e: any) {
+      this.logger.warn(`mlbb login injoignable: ${e?.message}`);
+      throw new BadRequestException('Service MLBB momentanément indisponible. Réessayez.');
+    }
+    if (json?.code !== 0 || !json?.data) {
+      throw new UnauthorizedException(json?.msg || 'Code de vérification invalide ou expiré.');
+    }
+    const data = json.data;
+    return (data.jwt || data.token || null) as string | null;
+  }
+
+  /** Champs Prisma dérivés d'un profil de jeu, prêts pour create/update. */
+  private gameFields(zoneId: number, token: string | null, profile: any) {
+    return {
+      mlbbZoneId: zoneId,
+      mlbbToken: token,
+      gameNickname: profile.nickname,
+      gameAvatar: profile.avatar,
+      gameLevel: profile.level,
+      gameRankLevel: profile.rankLevel,
+      gameCountry: profile.country,
+      gameStats: toJson(profile.stats),
+      gameFrequentHeroes: toJson(profile.frequentHeroes),
+      gameSyncedAt: new Date(),
+    };
+  }
 
   /** Envoie un code de vérification dans le courrier en jeu du joueur. */
   async mlbbSendVc(roleId: number, zoneId: number) {
@@ -118,68 +218,122 @@ export class AuthService {
 
   /** Connexion via le code reçu en jeu : valide le code, crée/retrouve notre compte et émet notre JWT. */
   async mlbbLogin(roleId: number, zoneId: number, vc: number) {
-    let json: any;
-    try {
-      const res = await fetch(`${MLBB_API}/user/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role_id: roleId, zone_id: zoneId, vc }),
-      });
-      json = await res.json();
-    } catch (e: any) {
-      this.logger.warn(`mlbb login injoignable: ${e?.message}`);
-      throw new BadRequestException('Service MLBB momentanément indisponible. Réessayez.');
-    }
-    if (json?.code !== 0 || !json?.data) {
-      throw new UnauthorizedException(json?.msg || 'Code de vérification invalide ou expiré.');
-    }
-
-    const data = json.data;
-    const mlbbToken: string | null = data.jwt || data.token || null;
-
-    // Nom du joueur (best-effort via /user/info).
-    let playerName = `Player ${roleId}`;
-    if (mlbbToken) {
-      try {
-        const infoRes = await fetch(`${MLBB_API}/user/info`, {
-          headers: { Authorization: `Bearer ${mlbbToken}` },
-        });
-        const info: any = await infoRes.json();
-        const d = info?.data ?? {};
-        playerName = d.name || d.nickname || d.username || d.roleName || playerName;
-      } catch {
-        /* on garde le nom par défaut */
-      }
-    }
+    const mlbbToken = await this.validateMlbbCode(roleId, zoneId, vc);
+    const profile = mlbbToken
+      ? await this.fetchGameProfile(mlbbToken)
+      : { nickname: null, avatar: null, level: null, rankLevel: null, country: null, stats: {}, frequentHeroes: [] };
 
     // Crée ou met à jour notre utilisateur lié à ce compte MLBB.
     let user = await this.prisma.user.findUnique({ where: { mlbbRoleId: roleId } });
     if (!user) {
       user = await this.prisma.user.create({
         data: {
-          username: await this.uniqueUsername(playerName, roleId),
+          username: await this.uniqueUsername(profile.nickname || `Player ${roleId}`, roleId),
           email: `mlbb-${roleId}@players.mlbbtogo`,
           password: await bcrypt.hash(crypto.randomUUID(), 10),
           provider: 'mlbb',
           mlbbRoleId: roleId,
-          mlbbZoneId: zoneId,
-          mlbbToken,
+          profileSource: 'game',
+          ...this.gameFields(zoneId, mlbbToken, profile),
         },
       });
     } else {
       user = await this.prisma.user.update({
         where: { id: user.id },
-        data: { mlbbZoneId: zoneId, mlbbToken, lastActive: new Date() },
+        data: { ...this.gameFields(zoneId, mlbbToken, profile), lastActive: new Date() },
       });
     }
 
     return { token: this.signToken(user), user: serializeUser(user) };
   }
 
-  // ============ Connexion Google ============
+  /**
+   * Réassigne le contenu (posts, commentaires, notifications) d'un compte
+   * fusionné vers le compte conservé, avant suppression de l'ancien.
+   */
+  private async mergeContent(survivorId: string, victimId: string) {
+    if (survivorId === victimId) return;
+    await this.prisma.post.updateMany({
+      where: { authorId: victimId },
+      data: { authorId: survivorId },
+    });
+    await this.prisma.comment.updateMany({
+      where: { authorId: victimId },
+      data: { authorId: survivorId },
+    });
+    await this.prisma.notification.updateMany({
+      where: { userId: victimId },
+      data: { userId: survivorId },
+    });
+  }
 
-  /** Connexion via Google : récupère le profil avec l'access token, crée/relie le compte, émet notre JWT. */
-  async googleLogin(accessToken: string) {
+  /**
+   * Lie un compte de jeu MLBB à l'utilisateur déjà connecté (ex. compte Google).
+   * Si ce compte de jeu existe déjà en tant que profil séparé, les deux comptes
+   * sont fusionnés (contenu réassigné, ancien profil supprimé).
+   */
+  async linkMlbb(userId: string, roleId: number, zoneId: number, vc: number) {
+    const current = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!current) throw new NotFoundException('Utilisateur introuvable.');
+    if (current.mlbbRoleId && current.mlbbRoleId !== roleId) {
+      throw new ConflictException('Un compte de jeu est déjà lié à ce profil.');
+    }
+
+    const mlbbToken = await this.validateMlbbCode(roleId, zoneId, vc);
+    const profile = mlbbToken ? await this.fetchGameProfile(mlbbToken) : EMPTY_GAME_PROFILE;
+
+    // Le compte de jeu appartient-il déjà à un autre profil ? Si oui : fusion.
+    const owner = await this.prisma.user.findUnique({ where: { mlbbRoleId: roleId } });
+    let carry: any = {};
+    if (owner && owner.id !== userId) {
+      if (owner.googleId && current.googleId) {
+        throw new ConflictException(
+          'Chaque compte est déjà lié à un compte Google différent. Fusion automatique impossible.',
+        );
+      }
+      // On hérite du compte Google de l'autre profil si le courant n'en a pas.
+      if (owner.googleId && !current.googleId) {
+        carry = {
+          googleId: owner.googleId,
+          googleEmail: owner.googleEmail,
+          googleName: owner.googleName,
+          googleAvatar: owner.googleAvatar,
+        };
+      }
+      await this.mergeContent(userId, owner.id);
+      await this.prisma.user.delete({ where: { id: owner.id } });
+    }
+
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        mlbbRoleId: roleId,
+        ...this.gameFields(zoneId, mlbbToken, profile),
+        ...carry,
+        lastActive: new Date(),
+      },
+    });
+    return serializeUser(user);
+  }
+
+  /** Resynchronise les données de jeu de l'utilisateur connecté. */
+  async syncGame(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user?.mlbbToken || !user.mlbbZoneId) {
+      throw new BadRequestException('Aucun compte de jeu lié.');
+    }
+    const profile = await this.fetchGameProfile(user.mlbbToken);
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: this.gameFields(user.mlbbZoneId, user.mlbbToken, profile),
+    });
+    return serializeUser(updated);
+  }
+
+  // ============ Connexion / liaison Google ============
+
+  /** Récupère le profil Google (sub, email, nom, photo) depuis un access token. */
+  private async fetchGoogleProfile(accessToken: string) {
     let profile: any;
     try {
       const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
@@ -191,44 +345,113 @@ export class AuthService {
       this.logger.warn(`Google userinfo échec: ${e?.message}`);
       throw new UnauthorizedException('Jeton Google invalide.');
     }
-
     const googleId: string = profile.sub;
     const email: string = profile.email;
     if (!googleId || !email) {
       throw new UnauthorizedException('Profil Google incomplet.');
     }
-    const name: string = profile.name || email.split('@')[0];
-    const avatar: string | null = profile.picture || null;
+    return {
+      googleId,
+      googleEmail: email,
+      googleName: profile.name || email.split('@')[0],
+      googleAvatar: (profile.picture as string) || null,
+    };
+  }
 
-    // Cherche par googleId, sinon par email (lie un compte existant).
+  /** Connexion via Google : récupère le profil, crée/relie le compte, émet notre JWT. */
+  async googleLogin(accessToken: string) {
+    const g = await this.fetchGoogleProfile(accessToken);
+
+    // Cherche par googleId, sinon par email (lie un compte local existant).
     let user =
-      (await this.prisma.user.findUnique({ where: { googleId } })) ||
-      (await this.prisma.user.findUnique({ where: { email } }));
+      (await this.prisma.user.findUnique({ where: { googleId: g.googleId } })) ||
+      (await this.prisma.user.findUnique({ where: { email: g.googleEmail } }));
 
     if (!user) {
       user = await this.prisma.user.create({
         data: {
-          username: await this.uniqueUsernameFrom(name),
-          email,
+          username: await this.uniqueUsernameFrom(g.googleName),
+          email: g.googleEmail,
           password: await bcrypt.hash(crypto.randomUUID(), 10),
           provider: 'google',
-          googleId,
-          avatar,
+          profileSource: 'google',
+          ...g,
         },
-      });
-    } else if (!user.googleId) {
-      user = await this.prisma.user.update({
-        where: { id: user.id },
-        data: { googleId, avatar: user.avatar ?? avatar, lastActive: new Date() },
       });
     } else {
       user = await this.prisma.user.update({
         where: { id: user.id },
-        data: { lastActive: new Date() },
+        data: { ...g, lastActive: new Date() },
       });
     }
 
     return { token: this.signToken(user), user: serializeUser(user) };
+  }
+
+  /**
+   * Lie un compte Google à l'utilisateur déjà connecté (ex. compte de jeu).
+   * Si ce compte Google existe déjà en tant que profil séparé, les deux comptes
+   * sont fusionnés (contenu réassigné, ancien profil supprimé).
+   */
+  async linkGoogle(userId: string, accessToken: string) {
+    const current = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!current) throw new NotFoundException('Utilisateur introuvable.');
+    const g = await this.fetchGoogleProfile(accessToken);
+    if (current.googleId && current.googleId !== g.googleId) {
+      throw new ConflictException('Un compte Google est déjà lié à ce profil.');
+    }
+
+    // Le compte Google appartient-il déjà à un autre profil ? Si oui : fusion.
+    const owner = await this.prisma.user.findUnique({ where: { googleId: g.googleId } });
+    let carry: any = {};
+    if (owner && owner.id !== userId) {
+      if (owner.mlbbRoleId && current.mlbbRoleId) {
+        throw new ConflictException(
+          'Chaque compte est déjà lié à un compte de jeu différent. Fusion automatique impossible.',
+        );
+      }
+      // On hérite du compte de jeu de l'autre profil si le courant n'en a pas.
+      if (owner.mlbbRoleId && !current.mlbbRoleId) {
+        carry = {
+          mlbbRoleId: owner.mlbbRoleId,
+          mlbbZoneId: owner.mlbbZoneId,
+          mlbbToken: owner.mlbbToken,
+          gameNickname: owner.gameNickname,
+          gameAvatar: owner.gameAvatar,
+          gameLevel: owner.gameLevel,
+          gameRankLevel: owner.gameRankLevel,
+          gameCountry: owner.gameCountry,
+          gameStats: owner.gameStats,
+          gameFrequentHeroes: owner.gameFrequentHeroes,
+          gameSyncedAt: owner.gameSyncedAt,
+        };
+      }
+      await this.mergeContent(userId, owner.id);
+      await this.prisma.user.delete({ where: { id: owner.id } });
+    }
+
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: { ...g, ...carry, lastActive: new Date() },
+    });
+    return serializeUser(user);
+  }
+
+  /** Choisit la source du profil affiché (google | game). */
+  async setProfileSource(userId: string, source: 'google' | 'game') {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Utilisateur introuvable.');
+    if (source === 'google' && !user.googleId) {
+      throw new BadRequestException('Aucun compte Google lié.');
+    }
+    if (source === 'game' && !user.mlbbRoleId) {
+      throw new BadRequestException('Aucun compte de jeu lié.');
+    }
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: { profileSource: source },
+    });
+    return serializeUser(updated);
   }
 
   /** Username unique à partir d'un nom (gère les collisions). */

@@ -18,7 +18,22 @@ export function computeWinRate(wins: number, losses: number): number {
  */
 export function serializeUser(user: any) {
   if (!user) return user;
-  const { password, ...rest } = user;
+  const { password, mlbbToken, ...rest } = user;
+
+  const hasGoogle = !!user.googleId;
+  const hasGame = !!user.mlbbRoleId;
+  const source = user.profileSource === 'google' ? 'google' : 'game';
+
+  // Avatar/nom affichés selon la préférence, avec repli sur l'autre source puis le champ legacy.
+  const displayAvatar =
+    source === 'google'
+      ? user.googleAvatar || user.gameAvatar || user.avatar || null
+      : user.gameAvatar || user.googleAvatar || user.avatar || null;
+  const displayName =
+    source === 'google'
+      ? user.googleName || user.gameNickname || user.username
+      : user.gameNickname || user.googleName || user.username;
+
   return {
     ...rest,
     favoriteHeroes: parseJson<string[]>(user.favoriteHeroes, []),
@@ -26,6 +41,16 @@ export function serializeUser(user: any) {
     winRate: computeWinRate(user.wins, user.losses),
     roleUser: user.roleUser,
     role_user: user.roleUser,
+    // Identités liées
+    hasGoogle,
+    hasGame,
+    profileSource: source,
+    // Profil affiché (résolu selon profileSource)
+    avatar: displayAvatar,
+    displayName,
+    // Données de jeu prêtes à l'emploi
+    gameStats: parseJson<any>(user.gameStats, {}),
+    gameFrequentHeroes: parseJson<any[]>(user.gameFrequentHeroes, []),
   };
 }
 

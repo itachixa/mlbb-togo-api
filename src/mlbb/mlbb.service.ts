@@ -126,7 +126,11 @@ export class MlbbService {
     } catch {
       throw new BadRequestException('URL invalide.');
     }
-    const allowed = ['akmweb.youngjoygame.com', 'akmwebstatic.yuanzhanapp.com'];
+    const allowed = [
+      'akmweb.youngjoygame.com',
+      'akmwebstatic.yuanzhanapp.com',
+      'akmpicture.youngjoygame.com',
+    ];
     if (!allowed.includes(host)) {
       throw new BadRequestException('Hôte non autorisé.');
     }

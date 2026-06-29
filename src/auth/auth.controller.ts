@@ -1,10 +1,11 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { MlbbSendVcDto, MlbbLoginDto } from './dto/mlbb-login.dto';
 import { GoogleLoginDto } from './dto/google.dto';
+import { ProfileSourceDto } from './dto/profile-source.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
@@ -49,5 +50,33 @@ export class AuthController {
   @Get('me')
   me(@CurrentUser() user: { id: string }) {
     return this.authService.me(user.id);
+  }
+
+  /** Lie un compte de jeu MLBB au compte connecté (code de vérification). */
+  @UseGuards(JwtAuthGuard)
+  @Post('link/mlbb')
+  linkMlbb(@CurrentUser() user: { id: string }, @Body() dto: MlbbLoginDto) {
+    return this.authService.linkMlbb(user.id, dto.roleId, dto.zoneId, dto.vc);
+  }
+
+  /** Lie un compte Google au compte connecté. */
+  @UseGuards(JwtAuthGuard)
+  @Post('link/google')
+  linkGoogle(@CurrentUser() user: { id: string }, @Body() dto: GoogleLoginDto) {
+    return this.authService.linkGoogle(user.id, dto.accessToken);
+  }
+
+  /** Choisit la source du profil affiché (google | game). */
+  @UseGuards(JwtAuthGuard)
+  @Patch('profile-source')
+  setProfileSource(@CurrentUser() user: { id: string }, @Body() dto: ProfileSourceDto) {
+    return this.authService.setProfileSource(user.id, dto.source);
+  }
+
+  /** Resynchronise les données de jeu du compte connecté. */
+  @UseGuards(JwtAuthGuard)
+  @Post('sync-game')
+  syncGame(@CurrentUser() user: { id: string }) {
+    return this.authService.syncGame(user.id);
   }
 }

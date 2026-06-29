@@ -37,10 +37,25 @@ model User {
   roleUser       String    @default("user") // user | moderator | admin
   // Identité de connexion
   provider       String    @default("local") // local | mlbb | google
+  // Profil Google lié (si présent)
+  googleId       String?   @unique // identifiant Google (sub)
+  googleEmail    String? // email du compte Google
+  googleName     String? // nom affiché Google
+  googleAvatar   String? // photo de profil Google
+  // Profil de jeu MLBB lié (si présent)
   mlbbRoleId     Int?      @unique // identifiant de jeu MLBB (role_id)
   mlbbZoneId     Int? // serveur MLBB (zone_id)
   mlbbToken      String? // jeton de l'API MLBB (stats, matchs...)
-  googleId       String?   @unique // identifiant Google (sub)
+  gameNickname   String? // pseudo en jeu
+  gameAvatar     String? // avatar en jeu
+  gameLevel      Int? // niveau du joueur
+  gameRankLevel  Int? // rang actuel (rank_level)
+  gameCountry    String? // pays enregistré en jeu
+  gameStats      String    @default("{}") // JSON: victoires, parties, MVP, série...
+  gameFrequentHeroes String @default("[]") // JSON: héros favoris (parties, winrate)
+  gameSyncedAt   DateTime? // dernière synchronisation des données de jeu
+  // Préférence d'affichage du profil
+  profileSource  String    @default("game") // google | game
   teamId         String?
   team           Team?     @relation("TeamMembers", fields: [teamId], references: [id])
   posts          Post[]
