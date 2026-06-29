@@ -1,0 +1,266 @@
+// Schéma Prisma — MLBB Togo
+// SQLite pour un démarrage local sans dépendance externe.
+// Les listes/objets complexes sont stockés en TEXT JSON (portabilité SQLite).
+// Pour la production, basculer le provider sur "postgresql" et adapter DATABASE_URL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// === Utilisateurs / Joueurs ===
+model User {
+  id             String    @id @default(cuid())
+  username       String    @unique
+  email          String    @unique
+  password       String
+  avatar         String?
+  rank           String    @default("warrior")
+  role           String    @default("fighter") // rôle MLBB préféré
+  favoriteHeroes String    @default("[]") // JSON: string[]
+  wins           Int       @default(0)
+  losses         Int       @default(0)
+  mvpCount       Int       @default(0)
+  streak         Int       @default(0)
+  country        String    @default("Togo")
+  city           String?
+  bio            String?
+  badges         String    @default("[]") // JSON: string[]
+  joinedAt       DateTime  @default(now())
+  lastActive     DateTime  @default(now())
+  isOnline       Boolean   @default(false)
+  isBanned       Boolean   @default(false)
+  roleUser       String    @default("user") // user | moderator | admin
+  teamId         String?
+  team           Team?     @relation("TeamMembers", fields: [teamId], references: [id])
+  posts          Post[]
+  comments       Comment[]
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+// === Équipes ===
+model Team {
+  id           String   @id @default(cuid())
+  name         String
+  tag          String
+  logo         String?
+  description  String?
+  captainId    String?
+  members      User[]   @relation("TeamMembers")
+  maxMembers   Int      @default(7)
+  wins         Int      @default(0)
+  losses       Int      @default(0)
+  rank         Int      @default(0)
+  foundedAt    DateTime @default(now())
+  region       String   @default("Togo")
+  achievements String   @default("[]") // JSON: string[]
+  isRecruiting Boolean  @default(false)
+  lookingFor   String   @default("[]") // JSON: string[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// === Forum : posts & commentaires ===
+model Post {
+  id         String    @id @default(cuid())
+  authorId   String
+  author     User?     @relation(fields: [authorId], references: [id])
+  authorName String
+  authorRank String?
+  category   String
+  title      String
+  content    String
+  likes      Int       @default(0)
+  views      Int       @default(0)
+  isPinned   Boolean   @default(false)
+  comments   Comment[]
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
+model Comment {
+  id         String   @id @default(cuid())
+  postId     String
+  post       Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  authorId   String
+  author     User?    @relation(fields: [authorId], references: [id])
+  authorName String
+  content    String
+  createdAt  DateTime @default(now())
+}
+
+// === Tournois ===
+model Tournament {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?
+  organizer       String?
+  status          String   @default("upcoming") // upcoming | ongoing | completed | cancelled
+  startDate       String?
+  endDate         String?
+  prizePool       String?
+  maxTeams        Int      @default(16)
+  registeredTeams String   @default("[]") // JSON: string[] (ids d'équipes)
+  format          String?
+  rules           String?
+  banner          String?
+  brackets        String   @default("[]") // JSON
+  streamUrl       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// === Événements ===
+model Event {
+  id           String   @id @default(cuid())
+  title        String
+  type         String // scrim | coaching | tournament
+  description  String?
+  date         String?
+  time         String?
+  duration     String?
+  participants String   @default("[]") // JSON: string[]
+  organizer    String?
+  isPublic     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+}
+
+// === Matchs ===
+model Match {
+  id         String   @id @default(cuid())
+  team1      String // JSON: { id, name, score }
+  team2      String // JSON: { id, name, score }
+  tournament String?
+  date       String?
+  status     String   @default("upcoming") // completed | upcoming
+  mvp        String?
+  duration   String?
+  format     String?
+  games      String   @default("[]") // JSON: { number, winner, duration, mvp }[]
+  createdAt  DateTime @default(now())
+}
+
+// === Héros MLBB ===
+model Hero {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  role        String // tank | fighter | assassin | mage | marksman | support
+  image       String?
+  description String?
+  createdAt   DateTime @default(now())
+}
+
+// === Journal d'administration ===
+model AdminLog {
+  id        String   @id @default(cuid())
+  action    String
+  admin     String
+  target    String?
+  details   String?
+  timestamp DateTime @default(now())
+}
+
+// === Constructeur de formulaires ===
+model FormTemplate {
+  id          String         @id @default(cuid())
+  name        String
+  description String?
+  fields      String         @default("[]") // JSON: champ[]
+  status      String         @default("active")
+  responses   FormResponse[]
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+}
+
+model FormResponse {
+  id          String       @id @default(cuid())
+  formId      String
+  form        FormTemplate @relation(fields: [formId], references: [id], onDelete: Cascade)
+  data        String       @default("{}") // JSON: { [label]: valeur }
+  submittedAt DateTime     @default(now())
+}
+
+// === Notifications ===
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String?
+  type      String
+  title     String
+  message   String
+  read      Boolean  @default(false)
+  link      String?
+  createdAt DateTime @default(now())
+}
+
+// === E-sport : organisation + sous-équipes ===
+// Schéma volontairement souple : on pourra ajouter des colonnes au fil du développement.
+model Esport {
+  id          String       @id @default(cuid())
+  name        String
+  logo        String? // URL (Cloudinary) — on ne stocke pas les fichiers
+  color       String? // couleur dominante (ex: #E9B84B)
+  description String?
+  teams       EsportTeam[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+model EsportTeam {
+  id        String   @id @default(cuid())
+  name      String
+  image     String? // URL (Cloudinary)
+  esportId  String
+  esport    Esport   @relation(fields: [esportId], references: [id], onDelete: Cascade)
+  sort      Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// === Sponsors ===
+model Sponsor {
+  id        String   @id @default(cuid())
+  name      String?
+  logo      String // URL (Cloudinary)
+  url       String?
+  sort      Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+// === MTL : Mobile Legends (Bang Bang) Togo League ===
+model Mtl {
+  id          String     @id @default(cuid())
+  name        String // "Mobile Legends Bang Bang Togo League"
+  season      String? // "Saison 1"
+  description String?
+  startDate   String? // "2025-10-17"
+  endDate     String? // "2025-12-07"
+  images      MtlImage[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model MtlImage {
+  id        String   @id @default(cuid())
+  image     String // URL (Cloudinary)
+  caption   String?
+  sort      Int      @default(0)
+  mtlId     String
+  mtl       Mtl      @relation(fields: [mtlId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+}
+
+// === Messages du formulaire de contact ===
+model ContactMessage {
+  id        String   @id @default(cuid())
+  name      String
+  email     String
+  subject   String?
+  message   String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
