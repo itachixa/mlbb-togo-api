@@ -33,46 +33,85 @@ function have(cmd) {
   return r.status === 0;
 }
 
+function standaloneError() {
+  console.error(
+    [
+      '',
+      `✗ MongoDB tourne sur le port ${PORT} mais n'est PAS un replica set — or Prisma l'exige.`,
+      '  C\'est le cas typique d\'une installation de MongoDB en service (mode standalone).',
+      '',
+      '  Deux solutions :',
+      '',
+      '  • Rapide — arrête le service puis relance la commande :',
+      '      Windows  : ouvre un terminal Administrateur → `net stop MongoDB` → relance `npm run db:setup`',
+      '      Linux    : `sudo systemctl stop mongod` → relance',
+      '      macOS    : `brew services stop mongodb-community` → relance',
+      '    (le script démarrera alors sa propre instance en replica set, sans toucher à tes données de service.)',
+      '',
+      '  • Permanent — active la réplication sur ton service :',
+      '      dans le fichier de conf MongoDB (mongod.cfg / mongod.conf) ajoute :',
+      '          replication:',
+      '            replSetName: rs0',
+      '      redémarre le service, puis lance une fois : `mongosh --eval "rs.initiate()"`',
+      '',
+    ].join('\n'),
+  );
+  process.exit(1);
+}
+
 async function ensureMongo() {
-  if (await portOpen()) {
-    console.log(`✓ MongoDB déjà actif sur ${PORT}`);
+  const alreadyUp = await portOpen();
+
+  if (!alreadyUp) {
+    if (!have('mongod')) {
+      console.error('✗ mongod introuvable. Installe MongoDB : https://www.mongodb.com/try/download/community');
+      process.exit(1);
+    }
+    console.log('▶ Démarrage de MongoDB (replica set rs0)…');
+    fs.mkdirSync(MONGO_HOME, { recursive: true });
+    fs.mkdirSync(DATA, { recursive: true });
+
+    const args = ['--dbpath', DATA, '--replSet', 'rs0', '--bind_ip', '127.0.0.1', '--port', String(PORT)];
+    if (!isWin) args.push('--unixSocketPrefix', MONGO_HOME); // socket Unix : POSIX uniquement
+
+    const out = fs.openSync(LOG, 'a');
+    const child = spawn(isWin ? 'mongod.exe' : 'mongod', args, {
+      detached: true,
+      stdio: ['ignore', out, out],
+      windowsHide: true,
+    });
+    child.on('error', (e) => {
+      console.error('✗ Échec du démarrage de mongod :', e.message);
+      process.exit(1);
+    });
+    child.unref();
+
+    for (let i = 0; i < 60 && !(await portOpen()); i++) await sleep(500);
+    if (!(await portOpen())) {
+      console.error(`✗ MongoDB n'a pas démarré (voir ${LOG})`);
+      process.exit(1);
+    }
+  } else {
+    console.log(`✓ MongoDB détecté sur ${PORT}`);
+  }
+
+  // Dans TOUS les cas : s'assurer que c'est un replica set avec un PRIMARY.
+  // (Si le port était déjà pris par un mongod standalone, db push échouerait
+  //  ensuite avec un « ReplicaSetNoPrimary » obscur — on le rattrape ici.)
+  if (!have('mongosh')) {
+    console.warn('⚠ mongosh introuvable : impossible de vérifier/initialiser le replica set.');
     return;
   }
-  if (!have('mongod')) {
-    console.error('✗ mongod introuvable. Installe MongoDB : https://www.mongodb.com/try/download/community');
+  const r = spawnSync(`mongosh --quiet --port ${PORT} "${RS_SCRIPT}"`, { shell: true, stdio: 'ignore' });
+  if (r.status === 2) {
+    // Serveur lancé sans --replSet (standalone) → non convertible à chaud.
+    standaloneError();
+  }
+  if (r.status !== 0) {
+    console.error(`✗ Le replica set rs0 n'a pas de PRIMARY (voir ${LOG}).`);
     process.exit(1);
   }
-
-  console.log('▶ Démarrage de MongoDB (replica set rs0)…');
-  fs.mkdirSync(MONGO_HOME, { recursive: true });
-  fs.mkdirSync(DATA, { recursive: true });
-
-  const args = ['--dbpath', DATA, '--replSet', 'rs0', '--bind_ip', '127.0.0.1', '--port', String(PORT)];
-  if (!isWin) args.push('--unixSocketPrefix', MONGO_HOME); // socket Unix : POSIX uniquement
-
-  const out = fs.openSync(LOG, 'a');
-  const child = spawn(isWin ? 'mongod.exe' : 'mongod', args, {
-    detached: true,
-    stdio: ['ignore', out, out],
-    windowsHide: true,
-  });
-  child.on('error', (e) => {
-    console.error('✗ Échec du démarrage de mongod :', e.message);
-    process.exit(1);
-  });
-  child.unref();
-
-  for (let i = 0; i < 60 && !(await portOpen()); i++) await sleep(500);
-  if (!(await portOpen())) {
-    console.error(`✗ MongoDB n'a pas démarré (voir ${LOG})`);
-    process.exit(1);
-  }
-
-  // Initialise le replica set + attend le primary (script mongosh, idempotent).
-  if (have('mongosh')) {
-    spawnSync(`mongosh --quiet --port ${PORT} "${RS_SCRIPT}"`, { shell: true, stdio: 'ignore' });
-  }
-  console.log('✓ MongoDB prêt');
+  console.log('✓ MongoDB prêt (replica set rs0)');
 }
 
 module.exports = { ensureMongo };
